@@ -2,7 +2,7 @@ package wallet
 
 import (
 	"errors"
-
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/Usmash/wallet/pkg/types"
 )
@@ -11,6 +11,7 @@ var ErrPhoneRegistered = errors.New("phone already registered")
 var ErrAmountMustBePositive = errors.New("amount must be greater than zero")
 var ErrAccountNotFound = errors.New("account not found")
 var ErrNotEnoughBalance = errors.New("not enough balance")
+var ErrPaymentNotFound = errors.New("payment not found")
 
 type Service struct {
 	nextAccountID int64
@@ -18,10 +19,54 @@ type Service struct {
 	payments      []*types.Payment
 }
 
-type Error string
+type tService struct {
+	*Service
+}
 
-func (e Error) Error() string {
-	return string(e)
+type tAccount struct {
+	phone    types.Phone
+	balance  types.Money
+	payments []struct {
+		amount   types.Money
+		category types.PaymentCategory
+	}
+}
+
+var defaultTAccount = tAccount{
+	phone:   "+992900000001",
+	balance: 10_000_00,
+	payments: []struct {
+		amount   types.Money
+		category types.PaymentCategory
+	}{
+		{amount: 1_000_0, category: "auto"},
+	},
+}
+
+func newTService() *tService {
+	return &tService{Service: &Service{}}
+}
+
+func (s *tService) addAccount(data tAccount) (*types.Account, []*types.Payment, error) {
+	account, err := s.RegisterAccount(data.phone)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't register account, error = %v", err)
+	}
+
+	err = s.Deposit(account.ID, data.balance)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't deposit account error = %v", err)
+	}
+
+	payments := make([]*types.Payment, len(data.payments))
+	for i, payment := range data.payments {
+		payments[i], err = s.Pay(account.ID, payment.amount, payment.category)
+		if err != nil {
+			return nil, nil, fmt.Errorf("can't make payment, error = %v", err)
+		}
+	}
+
+	return account, payments, nil
 }
 
 func (s *Service) RegisterAccount(phone types.Phone) (*types.Account, error) {
@@ -111,4 +156,61 @@ func (s *Service) FindAccountByID(accountID int64) (*types.Account, error) {
 	}
 
 	return account, nil
+}
+
+func (s *Service) FindPaymentByID(paymentID string) (*types.Payment, error) {
+	var payment *types.Payment
+
+	for _, p := range s.payments {
+		if p.ID == paymentID {
+			payment = p
+			break
+		}
+	}
+	if payment == nil {
+		return nil, ErrPaymentNotFound
+	}
+
+	return payment, nil
+}
+
+func (s *Service) Reject(paymentID string) error {
+
+	payment, err := s.FindPaymentByID(paymentID)
+
+	if err != nil {
+		return err
+	}
+
+	payment.Status = types.PaymentStatusFail
+
+	account, err := s.FindAccountByID(payment.AccountID)
+	if err != nil {
+		return err
+	}
+
+	account.Balance += payment.Amount
+
+	return nil
+}
+
+func (s *Service) Repeat(paymentID string) (*types.Payment, error) {
+	var targetPayment *types.Payment
+	for _, p := range s.payments {
+		if p.ID == paymentID {
+			targetPayment = p
+		}
+	}
+
+	if targetPayment == nil {
+		return nil, ErrPaymentNotFound
+	}
+
+	payment, err := s.Pay(targetPayment.AccountID, targetPayment.Amount, targetPayment.Category)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return payment, err
 }
